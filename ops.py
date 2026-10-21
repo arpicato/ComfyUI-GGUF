@@ -85,12 +85,20 @@ class GGMLTensor(torch.Tensor):
     def __new__(cls, *args, tensor_type, tensor_shape, patches=[], **kwargs):
         return super().__new__(cls, *args, **kwargs)
 
+    def set_file_source(self, source, offset, size, readonly):
+        self.file_source = (source, offset, size)
+        self.file_source_data_ptr = self.data_ptr()
+        self.file_source_readonly = readonly
+        self.file_source_version = None if self.is_inference() else self._version
+
     def current_file_source(self):
         source = getattr(self, "file_source", None)
-        if source is not None and self._version == getattr(self, "file_source_version", None) \
-                and self.data_ptr() == getattr(self, "file_source_data_ptr", None):
-            return source
-        return None
+        if source is None or self.data_ptr() != getattr(self, "file_source_data_ptr", None):
+            return None
+        version = getattr(self, "file_source_version", None)
+        if version is None:
+            return source if self.is_inference() and self.file_source_readonly else None
+        return source if not self.is_inference() and self._version == version else None
 
     def to(self, *args, **kwargs):
         target = kwargs.get("device", args[0] if args else None)
