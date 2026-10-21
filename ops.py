@@ -53,6 +53,8 @@ class _GGUFStagingBuffers:
         self.events = [torch.cuda.Event() for _ in range(2)]
         self.stream = torch.cuda.Stream(device=device)
 
+GGUF_STREAM_TO_GPU = os.environ.get("COMFYUI_GGUF_STREAM_TO_GPU") == "1"
+MIN_STREAM_BYTES = 8 * 1024 * 1024
 _gguf_stagers = {}
 _gguf_stagers_lock = threading.Lock()
 
@@ -108,8 +110,9 @@ class GGMLTensor(torch.Tensor):
         target = kwargs.get("device", args[0] if args else None)
         target = torch.device(target) if isinstance(target, (str, torch.device)) else None
         dtype = kwargs.get("dtype", args[1] if len(args) > 1 and isinstance(args[1], torch.dtype) else None)
-        source = self.current_file_source()
-        if source and hasattr(os, "preadv") and self.device.type == "cpu" and target is not None and target.type == "cuda" \
+        source = self.current_file_source() if GGUF_STREAM_TO_GPU else None
+        if source and source[2] >= MIN_STREAM_BYTES and hasattr(os, "preadv") and self.device.type == "cpu" \
+                and target is not None and target.type == "cuda" \
                 and (dtype is None or dtype == self.dtype) and kwargs.get("memory_format") is None:
             stager = _gguf_stager(target)
             new = self._stream_to_device(target, source, stager) if stager is not None else super().to(*args, **kwargs)

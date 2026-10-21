@@ -82,6 +82,13 @@ class FileSourceTests(unittest.TestCase):
 
 @unittest.skipUnless(torch.cuda.is_available(), "requires a CUDA or ROCm device")
 class DeviceTransferTests(unittest.TestCase):
+    def setUp(self):
+        self.streaming_enabled = mock.patch.object(ops, "GGUF_STREAM_TO_GPU", True, create=True)
+        self.streaming_enabled.start()
+
+    def tearDown(self):
+        self.streaming_enabled.stop()
+
     def test_multi_chunk_transfer_and_reload(self):
         size = 3 * 8 * 1024 * 1024 + 13
         payload = np.arange(size, dtype=np.uint8)
@@ -147,17 +154,51 @@ class DeviceTransferTests(unittest.TestCase):
     def test_staging_unavailable_uses_regular_transfer(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "weights.bin"
-            path.write_bytes(bytes([1, 2, 3, 4]))
+            payload = (bytes([1, 2, 3, 4]) * (2 * 1024 * 1024 + 1))[:8 * 1024 * 1024 + 1]
+            path.write_bytes(payload)
             fd = os.open(path, os.O_RDONLY)
             try:
-                tensor = GGMLTensor(torch.tensor([1, 2, 3, 4], dtype=torch.uint8),
-                                    tensor_type=gguf.GGMLQuantizationType.Q8_0, tensor_shape=(4,))
-                tensor.set_file_source(types.SimpleNamespace(fd=fd), 0, 4, readonly=False)
+                data = np.frombuffer(payload, dtype=np.uint8).copy()
+                tensor = GGMLTensor(torch.from_numpy(data),
+                                    tensor_type=gguf.GGMLQuantizationType.Q8_0, tensor_shape=data.shape)
+                tensor.set_file_source(types.SimpleNamespace(fd=fd), 0, data.size, readonly=False)
                 before = GGMLTensor.streamed_bytes
                 with mock.patch.object(ops, "_gguf_stager", return_value=None):
                     gpu = tensor.to("cuda")
                 self.assertEqual(GGMLTensor.streamed_bytes, before)
-                self.assertEqual(gpu.to("cpu").tolist(), [1, 2, 3, 4])
+                self.assertTrue(np.array_equal(gpu.to("cpu").numpy(), data))
+            finally:
+                os.close(fd)
+
+    def test_small_tensor_uses_regular_transfer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "weights.bin"
+            path.write_bytes(bytes(4096))
+            fd = os.open(path, os.O_RDONLY)
+            try:
+                tensor = GGMLTensor(torch.zeros(4096, dtype=torch.uint8),
+                                    tensor_type=gguf.GGMLQuantizationType.Q8_0, tensor_shape=(4096,))
+                tensor.set_file_source(types.SimpleNamespace(fd=fd), 0, 4096, readonly=False)
+                before = GGMLTensor.streamed_bytes
+                self.assertEqual(tensor.to("cuda").to("cpu").numel(), 4096)
+                self.assertEqual(GGMLTensor.streamed_bytes, before)
+            finally:
+                os.close(fd)
+
+    def test_disabled_streaming_uses_regular_transfer(self):
+        size = 9 * 1024 * 1024
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "weights.bin"
+            path.write_bytes(bytes(size))
+            fd = os.open(path, os.O_RDONLY)
+            try:
+                tensor = GGMLTensor(torch.zeros(size, dtype=torch.uint8),
+                                    tensor_type=gguf.GGMLQuantizationType.Q8_0, tensor_shape=(size,))
+                tensor.set_file_source(types.SimpleNamespace(fd=fd), 0, size, readonly=False)
+                before = GGMLTensor.streamed_bytes
+                with mock.patch.object(ops, "GGUF_STREAM_TO_GPU", False):
+                    self.assertEqual(tensor.to("cuda").to("cpu").numel(), size)
+                self.assertEqual(GGMLTensor.streamed_bytes, before)
             finally:
                 os.close(fd)
 
