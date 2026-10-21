@@ -59,7 +59,11 @@ _gguf_stagers_lock = threading.Lock()
 def _gguf_stager(device):
     with _gguf_stagers_lock:
         if device not in _gguf_stagers:
-            _gguf_stagers[device] = _GGUFStagingBuffers(device)
+            try:
+                _gguf_stagers[device] = _GGUFStagingBuffers(device)
+            except RuntimeError as error:
+                logging.warning("GGUF pinned staging unavailable on %s: %s", device, error)
+                _gguf_stagers[device] = None
         return _gguf_stagers[device]
 
 class GGUFFileSource:
@@ -107,7 +111,8 @@ class GGMLTensor(torch.Tensor):
         source = self.current_file_source()
         if source and hasattr(os, "preadv") and self.device.type == "cpu" and target is not None and target.type == "cuda" \
                 and (dtype is None or dtype == self.dtype) and kwargs.get("memory_format") is None:
-            new = self._stream_to_device(target, source)
+            stager = _gguf_stager(target)
+            new = self._stream_to_device(target, source, stager) if stager is not None else super().to(*args, **kwargs)
         else:
             new = super().to(*args, **kwargs)
         new.tensor_type = getattr(self, "tensor_type", None)
@@ -115,10 +120,9 @@ class GGMLTensor(torch.Tensor):
         new.patches = getattr(self, "patches", []).copy()
         return new
 
-    def _stream_to_device(self, device, source):
+    def _stream_to_device(self, device, source, stager):
         file, offset, size = source
         chunk_size = 8 * 1024 * 1024
-        stager = _gguf_stager(device)
         tensor = torch.empty(self.size(), dtype=self.dtype, device=device)
         destination = tensor.view(torch.uint8).flatten()
         if destination.numel() != size:
