@@ -85,11 +85,18 @@ class GGMLTensor(torch.Tensor):
     def __new__(cls, *args, tensor_type, tensor_shape, patches=[], **kwargs):
         return super().__new__(cls, *args, **kwargs)
 
+    def current_file_source(self):
+        source = getattr(self, "file_source", None)
+        if source is not None and self._version == getattr(self, "file_source_version", None) \
+                and self.data_ptr() == getattr(self, "file_source_data_ptr", None):
+            return source
+        return None
+
     def to(self, *args, **kwargs):
         target = kwargs.get("device", args[0] if args else None)
         target = torch.device(target) if isinstance(target, (str, torch.device)) else None
         dtype = kwargs.get("dtype", args[1] if len(args) > 1 and isinstance(args[1], torch.dtype) else None)
-        source = getattr(self, "file_source", None)
+        source = self.current_file_source()
         if source and hasattr(os, "preadv") and self.device.type == "cpu" and target is not None and target.type == "cuda" \
                 and (dtype is None or dtype == self.dtype) and kwargs.get("memory_format") is None:
             new = self._stream_to_device(target, source)
@@ -109,6 +116,7 @@ class GGMLTensor(torch.Tensor):
         if destination.numel() != size:
             raise ValueError("GGUF tensor byte count differs from file metadata")
         with stager.lock:
+            stager.stream.wait_stream(torch.cuda.current_stream(device))
             position = 0
             used = [False, False]
             while position < size:

@@ -143,6 +143,8 @@ def gguf_sd_loader(path, handle_prefix="model.diffusion_model.", is_text_model=F
             torch_tensor = torch_tensor.view(*shape)
         state_dict[sd_key] = GGMLTensor(torch_tensor, tensor_type=tensor.tensor_type, tensor_shape=shape)
         state_dict[sd_key].file_source = (source, tensor.data_offset, tensor.n_bytes)
+        state_dict[sd_key].file_source_version = state_dict[sd_key]._version
+        state_dict[sd_key].file_source_data_ptr = state_dict[sd_key].data_ptr()
 
         # 1D tensors shouldn't be quantized, this is a fix for BF16
         if len(shape) <= 1 and tensor.tensor_type == gguf.GGMLQuantizationType.BF16:
