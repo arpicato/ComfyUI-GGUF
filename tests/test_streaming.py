@@ -12,6 +12,10 @@ from unittest import mock
 import gguf
 import numpy as np
 import torch
+import comfy.cli_args
+
+if not torch.cuda.is_available():
+    comfy.cli_args.args.cpu = True
 
 
 package = types.ModuleType("gguf_stream_test")
@@ -68,9 +72,11 @@ class FileSourceTests(unittest.TestCase):
 
     def test_staging_allocation_failure_is_cached(self):
         device = torch.device("cuda:7")
-        with mock.patch.object(ops, "_GGUFStagingBuffers", side_effect=RuntimeError("pinning unavailable")):
-            self.assertIsNone(ops._gguf_stager(device))
-            self.assertIsNone(ops._gguf_stager(device))
+        with self.assertLogs(level="WARNING") as logs:
+            with mock.patch.object(ops, "_GGUFStagingBuffers", side_effect=RuntimeError("pinning unavailable")):
+                self.assertIsNone(ops._gguf_stager(device))
+                self.assertIsNone(ops._gguf_stager(device))
+        self.assertEqual(len(logs.output), 1)
         self.assertIsNone(ops._gguf_stagers.pop(device))
 
 
